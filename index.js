@@ -1,29 +1,24 @@
 import { load } from "cheerio";
-import axios from "axios";
-import { appendFileSync } from "fs";
+import puppeteer from "puppeteer";
 
 async function fetchSite(url) {
-  const data = await axios.request({
-    method: "GET",
-    url,
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
-    },
+  const browser = await puppeteer.launch({
+    headless: "old",
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    executablePath: '/usr/bin/google-chrome'
   });
 
-  return data;
+  const page = await browser.newPage();
+  await page.goto(url);
+
+  const html = await page.content();
+  return html
 }
 
 async function scrapeSiteUrls() {
   const sitesPage = await fetchSite("https://www.craigslist.org/about/sites");
   const $ = load(sitesPage.data);
   const sites = [];
-
-  // .colmask -> country container
-  // .box coloumn
-  // ul
-  // anchor tags
 
   $("body")
     .find(".colmask")
@@ -51,26 +46,31 @@ async function scrapeSiteUrls() {
 }
 
 const sites = await scrapeSiteUrls();
-console.log(sites)
+console.log(sites);
 
-// sites.map(async (url) => {
-//   // to follow /search/hum
-//   const searchSite = await fetchSite(`${url}/search/sof`);
+// async function scrapeHumanResource(url) {
+//   const searchSite = await fetchSite(url);
+
 //   const $ = load(searchSite.data);
 
-//   $("body")
-//     .find(".posting-title")
-//     .each((index, titleLink) => {
-//       const link = $(titleLink).attr("href");
-//       console.log(link);
-//     });
+//   const value = $("body").text();
+
+//   console.log(value);
 
 //   // to follow /search/sof
 //   // to follow /search/sad
 //   // to follow /search/tch
 //   // to follow /search/web
 //   // to follow /search/cpg
-// });
+//   // $("body")
+//   //   .find(".posting-title")
+//   //   .each((index, titleLink) => {
+//   //     const link = $(titleLink).attr("href");
+//   //     console.log(link);
+//   //   });
+// }
+
+// scrapeHumanResource("https://sandiego.craigslist.org/search/hum");
 
 // for each site append search to url to follow e.g sandiego.craiglist.org/search/hum for human resource
 
