@@ -3,6 +3,8 @@ import { load } from "cheerio";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { EventEmitter, errorMonitor } from "events";
+import { Cluster } from "puppeteer-cluster";
+
 
 process.setMaxListeners(30);
 
@@ -21,10 +23,11 @@ const Events = {
 };
 
 const processState = {
-  links: 0,
-  posts: 0,
-  linkTimer: 20000,
+  sites: [],
+  links: 75,
+  linkTimer: 10000,
   postTimer: 1000,
+  postLinks: [],
 };
 
 scraper.on(Events.START, scrapeSiteUrls);
@@ -39,51 +42,54 @@ scraper.on(errorMonitor, (error) => {
   console.error(error);
 });
 
+let browser;
+
 async function fetchSite(url) {
-  const browser = await puppeteer.launch({
+  browser = await puppeteer.launch({
     headless: false,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
     executablePath: "/usr/bin/google-chrome",
   });
 
-  const page = await browser.newPage();
-  // Setting page view
-  await page.setViewport({ width: 1440, height: 1080 });
-  await page.goto(url, { waitUntil: "networkidle2" });
+  let [page] = await browser.pages();
+
+  await page.goto(url);
 
   const html = await page.content();
-  await page.close();
-  await browser.close();
   return html;
 }
 
-const allPostLinks = [];
-
 async function combinePostingLinks(sites) {
-  const localCopy = allPostLinks
-  sites.sort();
-  await sleep(processState.linkTimer);
-  console.log(processState, sites[processState.links]);
+  await sites.sort();
+  console.log(sites[processState.links]);
   scraper.emit(Events.POST_LINKS, sites[processState.links]);
 
-  if (processState.links < sites.length - 1) {
-    scraper.emit(Events.LINKS, sites);
-  } else if (processState.links > sites.length -2) {
-    console.log("switching to posts");
-    scraper.emit(Events.POSTS, localCopy);
+  await sleep(processState.linkTimer);
+
+  if (processState.postLinks.length > 0) {
+    scraper.emit(Events.POSTS, processState.postLinks);
   }
 }
 
 async function combinePostData(links) {
-  console.log("starting")
-  links = [...new Set(links)]
-  await sleep(processState.postTimer);
-  console.log(links[processState.posts])
-  console.log(processState, links[processState.posts]);
-  scraper.emit(Events.DB, links[processState.posts]);
+  links = [...new Set(links)];
 
-  if (processState.posts < links.length - 1) {
+  scraper.emit(Events.DB, links[0]);
+  await sleep(1000);
+  processState.postLinks.shift();
+  await links.shift();
+
+  if (links.length > 0) {
+    console.log(
+      `City: ${processState.links + 1} of 714, Countdown: ${
+        links.length
+      }, Post Link: ${links[0]}`
+    );
     scraper.emit(Events.POSTS, links);
+  } else if (links.length === 0 && processState.postLinks.length === 0) {
+    console.log(`Starting link ${processState.links + 2}`);
+    processState.links += 1;
+    await sleep(1000);
+    scraper.emit(Events.LINKS, processState.sites);
   }
 }
 
@@ -97,84 +103,103 @@ async function scrapePostingLinks(url) {
     "/search/cpg",
   ];
 
-  searchTags.map(async (tag) => {
-    const searchSite = await fetchSite(`${url}${tag}`);
-    const $ = load(searchSite);
+  searchTags.sort().map(async (tag, index) => {
+    await fetchSite(`${url}${tag}`)
+      .then(async (result) => {
+        const $ = load(result);
 
-    $("body")
-      .find("main")
-      .find(".title-blob")
-      .find("a")
-      .each((_, link) => {
-        const url = $(link).attr("href");
-        allPostLinks.push(url);
-      });
+        const value = $("body")
+          .find("main")
+          .find(".title-blob")
+          .find("a")
+          .each((_, link) => {
+            const url = $(link).attr("href");
+            processState.postLinks.push(url);
+          });
+
+        if (
+          value.length === 0 &&
+          processState.links <= 713 &&
+          index === searchTags.length - 1 &&
+          processState.postLinks.length === 0
+        ) {
+          // start again
+          console.log("Skipping");
+          processState.links += 1;
+          await sleep(1000);
+          scraper.emit(Events.LINKS, processState.sites);
+        }
+      })
+      .catch((err) => console.error(err))
+      .finally(() => browser?.close());
   });
-  processState.links += 1;
 }
 
-// scrapePostingLinks("https://sandiego.craigslist.org");
-
 async function scrapeJob(url) {
-  const searchSite = await fetchSite(url);
-  const $ = load(searchSite);
+  await fetchSite(url)
+    .then(async (result) => {
+      const $ = load(result);
 
-  const dataStructure = {
-    title: "",
-    body: "",
-    notices: "",
-    time: "",
-    compensation: "",
-    employmentType: "",
-    jobTitle: "",
-    postId: "",
-  };
+      const dataStructure = {
+        title: "",
+        body: "",
+        notices: "",
+        time: "",
+        compensation: "",
+        employmentType: "",
+        jobTitle: "",
+        postId: "",
+        url,
+      };
 
-  if (!$("body").find("#titletextonly").text()) return null;
+      if (!$("body").find("#titletextonly").text()) return null;
 
-  dataStructure.title = $("body").find("#titletextonly").text();
-  dataStructure.body = $("body").find("#postingbody").text();
-  dataStructure.notices = $("body").find(".notices").text();
-  dataStructure.time = $("body").find("time").text();
-  $("body")
-    .find(".postinginfo")
-    .each((index, id) => {
-      index === 1
-        ? (dataStructure.postId = $(id).text().split(": ")[1])
-        : "empty";
-    });
+      dataStructure.title = $("body").find("#titletextonly").text();
+      dataStructure.body = $("body").find("#postingbody").text();
+      dataStructure.notices = $("body").find(".notices").text();
+      dataStructure.time = $("body").find("time").text();
+      $("body")
+        .find(".postinginfo")
+        .each((index, id) => {
+          index === 1
+            ? (dataStructure.postId = $(id).text().split(": ")[1])
+            : "empty";
+        });
 
-  $("body")
-    .find(".attrgroup")
-    .find("span")
-    .each((index, attributes) => {
-      const value = $(attributes).text();
-      if (index === 0) {
-        dataStructure.compensation = value.split(":")[1]|| "";
-      } else if (index === 1) {
-        dataStructure.employmentType = value.split(":")[1] || "";
-      } else {
-        dataStructure.jobTitle = value.split(":")[1] || "";
+      $("body")
+        .find(".attrgroup")
+        .find("span")
+        .each((index, attributes) => {
+          const value = $(attributes).text();
+          if (index === 0) {
+            dataStructure.compensation = value.split(":")[1] || "";
+          } else if (index === 1) {
+            dataStructure.employmentType = value.split(":")[1] || "";
+          } else {
+            dataStructure.jobTitle = value.split(":")[1] || "";
+          }
+        });
+
+      async function main() {
+        await prisma.job.upsert({
+          where: { postId: dataStructure.postId },
+          update: { ...dataStructure },
+          create: { ...dataStructure },
+        });
       }
-    });
 
-  async function main() {
-    await prisma.job.create({
-      data: dataStructure,
-    });
-  }
-
-  main()
-    .then(async () => {
-      await prisma.$disconnect();
+      main()
+        .then(async () => {
+          await prisma.$disconnect();
+        })
+        .catch(async (e) => {
+          console.error(e);
+          await prisma.$disconnect();
+          process.exit(1);
+        });
     })
-    .catch(async (e) => {
-      console.error(e);
-      await prisma.$disconnect();
-      process.exit(1);
-    });
-  
-  processState.posts += 1;
+    .catch((err) => console.error(err))
+    .finally(() => browser?.close());
 }
 
 function sleep(ms) {
@@ -182,35 +207,38 @@ function sleep(ms) {
     setTimeout(resolve, ms);
   });
 }
-// scrapeJob(
-//   "https://sandiego.craigslist.org/csd/sad/d/san-diego-it-technician-tier/7668546553.html"
-// );
-async function scrapeSiteUrls() {
-  const sitesPage = await fetchSite("https://www.craigslist.org/about/sites");
-  const $ = load(sitesPage);
-  const sites = [];
 
-  $("body")
-    .find(".colmask")
-    .each((index, country) => {
-      // Country
-      $(country)
-        .find(".box")
-        .each((index, box) => {
-          //   Box
-          $(box)
-            .find("ul")
-            .each((index, list) => {
-              //   List
-              $(list)
-                .find("a")
-                .each((index, url) => {
-                  const urls = $(url).attr("href");
-                  sites.push(urls);
+async function scrapeSiteUrls() {
+  await fetchSite("https://www.craigslist.org/about/sites")
+    .then((result) => {
+      const $ = load(result);
+      const sites = [];
+
+      $("body")
+        .find(".colmask")
+        .each((index, country) => {
+          // Country
+          $(country)
+            .find(".box")
+            .each((index, box) => {
+              //   Box
+              $(box)
+                .find("ul")
+                .each((index, list) => {
+                  //   List
+                  $(list)
+                    .find("a")
+                    .each((index, url) => {
+                      const urls = $(url).attr("href");
+                      sites.push(urls);
+                    });
                 });
             });
         });
-    });
 
-  scraper.emit(Events.LINKS, sites);
+      processState.sites.push(...sites);
+      scraper.emit(Events.LINKS, sites);
+    })
+    .catch((err) => console.error(err))
+    .finally(() => browser?.close());
 }

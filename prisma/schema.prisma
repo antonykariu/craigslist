@@ -19,7 +19,8 @@ model Job {
   compensation   String
   employmentType String
   jobTitle       String
-  postId         String
+  postId         String @unique
+  url            String
   createAt       DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }

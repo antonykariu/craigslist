@@ -9,5 +9,3 @@ ports:
       onOpen: ignore
     - port: 35900
       onOpen: ignore
-tasks:
-  - command: google-chrome --no-sandbox
