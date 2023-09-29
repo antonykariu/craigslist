@@ -71,11 +71,15 @@ async function main() {
   };
 
   const extractPostLinks = async ({ page, data: url }) => {
+    await sleep(3000);
+    processState.postLinks = [...new Set(processState.postLinks)];
+
     console.log(
       "Starting link: ",
       processState.sites.indexOf(url) + 1,
-      "of 4248"
+      "of 4248 " + " Posts: " + processState.postLinks.length
     );
+
     await page.goto(url, { waitUntil: "networkidle2" });
     const html = await page.content();
 
@@ -85,7 +89,7 @@ async function main() {
       .find("main")
       .find(".title-blob")
       .find("a")
-      .each((_, link) => {
+      .each(async (_, link) => {
         const urls = $(link).attr("href");
         processState.postLinks.push(urls);
       });
@@ -159,16 +163,22 @@ async function main() {
         await prisma.$disconnect();
         process.exit(1);
       });
+    await sleep(3000);
   };
 
   cluster.queue("https://www.craigslist.org/about/sites", extractCities);
   await sleep(10000);
-  // takes 4 seconds to get all 4284 links
+  // takes 4 wait for 10 seconds to get all 4284 links
+  processState.sites = [...new Set(processState.sites)];
   console.log(processState.sites.length);
 
-  //   processState.sites.map((site) => {
-  //     cluster.queue(site, extractPostLinks);
-  //   });
+  processState.sites.sort().map(async (site) => {
+    await cluster.queue(site, extractPostLinks);
+  });
+
+  processState.postLinks.sort().map(async (link) => {
+    await cluster.queue(link, extractJob);
+  });
 
   await cluster.idle();
   await cluster.close();
