@@ -20,10 +20,18 @@ async function main() {
   const processState = {
     postLinks: [],
     sites: [],
+    query: "frontend developer",
+    changingPost: [],
+    trigger: true,
+    index: 70,
+    terminate: false,
+    postLinksLength: 0,
   };
 
   cluster.on("taskerror", (err, data) => {
     console.log(`Error crawling ${data}: ${err.message}`);
+    processState.index += 1;
+    processState.trigger = true;
   });
 
   const sleep = (ms) => {
@@ -40,45 +48,67 @@ async function main() {
 
     $("body")
       .find(".colmask")
-      .each((_, country) => {
+      .each((indexCountry, country) => {
         // Country
-        $(country)
-          .find(".box")
-          .each((_, box) => {
-            //   Box
-            $(box)
-              .find("ul")
-              .each((_, list) => {
-                //   List
-                $(list)
-                  .find("a")
-                  .each((_, cities) => {
-                    const urls = $(cities).attr("href");
-                    const tags = [
-                      `${urls}/search/hum`,
-                      `${urls}/search/sof`,
-                      `${urls}/search/sad`,
-                      `${urls}/search/tch`,
-                      `${urls}/search/web`,
-                      `${urls}/search/cpg`,
-                    ];
+        if (indexCountry <= 2) {
+          $(country)
+            .find(".box")
+            .each((boxIndex, box) => {
+              //   Box
+              if (indexCountry === 2 && boxIndex === 3) {
+                $(box)
+                  .find("ul")
+                  .each((listIndex, list) => {
+                    //   List
+                    if (listIndex === 4) {
+                      $(list)
+                        .find("a")
+                        .each((_, cities) => {
+                          const urls = $(cities).attr("href");
+                          const tags = [
+                            `${urls}/search/jjj?query=${processState.query}`,
+                          ];
 
-                    processState.sites.push(...tags);
+                          processState.sites.push(...tags);
+                        });
+                    }
                   });
-              });
-          });
+              } else {
+                $(box)
+                  .find("ul")
+                  .each((_, list) => {
+                    //   List
+                    $(list)
+                      .find("a")
+                      .each((_, cities) => {
+                        const urls = $(cities).attr("href");
+                        const tags = [
+                          `${urls}/search/jjj?query=${processState.query}`,
+                        ];
+
+                        processState.sites.push(...tags);
+                      });
+                  });
+              }
+            });
+        }
       });
   };
 
   const extractPostLinks = async ({ page, data: url }) => {
-    await sleep(3000);
+    processState.trigger = false;
     processState.postLinks = [...new Set(processState.postLinks)];
 
     console.log(
       "Starting link: ",
       processState.sites.indexOf(url) + 1,
-      "of 4248 " + " Posts: " + processState.postLinks.length
+      "of " +
+        processState.sites.length +
+        " Posts extracted so far: " +
+        processState.postLinks.length
     );
+
+    const postLinks = [];
 
     await page.goto(url, { waitUntil: "networkidle2" });
     const html = await page.content();
@@ -92,15 +122,36 @@ async function main() {
       .each(async (_, link) => {
         const urls = $(link).attr("href");
         processState.postLinks.push(urls);
+        postLinks.push(urls);
       });
 
     if (value.length === 0) {
       throw new Error("No postings");
+    } else {
+      processState.changingPost = postLinks;
+      function task(index, url) {
+        setTimeout(() => {
+          cluster.queue(url, extractJob);
+          if (index === postLinks.length - 1) {
+            processState.index += 1;
+            processState.trigger = true;
+          }
+        }, 2000 * index);
+      }
+
+      for (let index = 0; index < postLinks.length; index++) {
+        processState.postLinksLength = postLinks.length;
+        task(index, postLinks[index]);
+      }
     }
   };
 
   const extractJob = async ({ page, data: url }) => {
-    console.log("extracting job");
+    console.log(
+      `extracting post ${processState.changingPost.indexOf(url) + 1}  of ${
+        processState.changingPost.length
+      }`
+    );
     await page.goto(url, { waitUntil: "networkidle2" });
     const html = await page.content();
 
@@ -163,22 +214,29 @@ async function main() {
         await prisma.$disconnect();
         process.exit(1);
       });
-    await sleep(3000);
   };
 
   cluster.queue("https://www.craigslist.org/about/sites", extractCities);
   await sleep(10000);
-  // takes 4 wait for 10 seconds to get all 4284 links
+
   processState.sites = [...new Set(processState.sites)];
   console.log(processState.sites.length);
 
-  processState.sites.sort().map(async (site) => {
-    await cluster.queue(site, extractPostLinks);
-  });
+  while (!processState.terminate) {
+    console.log("Starting loop");
 
-  processState.postLinks.sort().map(async (link) => {
-    await cluster.queue(link, extractJob);
-  });
+    if (processState.trigger) {
+      console.log("Starting queue");
+      cluster.queue(processState.sites[processState.index], extractPostLinks);
+      await sleep(4000);
+    }
+    if (!processState.trigger && processState.postLinksLength != 0) {
+      await sleep(2000 * processState.postLinksLength - 2);
+    }
+    if (processState.index === processState.sites.length - 1) {
+      processState.terminate = true;
+    }
+  }
 
   await cluster.idle();
   await cluster.close();
