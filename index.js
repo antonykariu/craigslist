@@ -20,16 +20,16 @@ async function main() {
   const processState = {
     postLinks: [],
     sites: [],
-    query: "frontend developer",
+    query: "remote recruiter",
     changingPost: [],
     trigger: true,
-    index: 70,
+    index: 0,
     terminate: false,
     postLinksLength: 0,
   };
 
   cluster.on("taskerror", (err, data) => {
-    console.log(`Error crawling ${data}: ${err.message}`);
+    console.log(`Error crawling ${data.slice(0, 40)}: ${err.message}`);
     processState.index += 1;
     processState.trigger = true;
   });
@@ -121,7 +121,6 @@ async function main() {
       .find("a")
       .each(async (_, link) => {
         const urls = $(link).attr("href");
-        processState.postLinks.push(urls);
         postLinks.push(urls);
       });
 
@@ -129,19 +128,29 @@ async function main() {
       throw new Error("No postings");
     } else {
       processState.changingPost = postLinks;
+      const filteredPostLinks = postLinks.filter(
+        (url) => !processState.postLinks.includes(url)
+      );
+
+      processState.postLinks.push(...postLinks);
+
+      if (filteredPostLinks.length === 0) {
+        throw new Error("The " + postLinks.length + " posts already exist");
+      }
+
       function task(index, url) {
         setTimeout(() => {
           cluster.queue(url, extractJob);
-          if (index === postLinks.length - 1) {
+          if (index === filteredPostLinks.length - 1) {
             processState.index += 1;
             processState.trigger = true;
           }
         }, 2000 * index);
       }
 
-      for (let index = 0; index < postLinks.length; index++) {
-        processState.postLinksLength = postLinks.length;
-        task(index, postLinks[index]);
+      for (let index = 0; index < filteredPostLinks.length; index++) {
+        processState.postLinksLength = filteredPostLinks.length;
+        task(index, filteredPostLinks[index]);
       }
     }
   };
@@ -233,7 +242,7 @@ async function main() {
     if (!processState.trigger && processState.postLinksLength != 0) {
       await sleep(2000 * processState.postLinksLength - 2);
     }
-    if (processState.index === processState.sites.length - 1) {
+    if (processState.index === processState.sites.length) {
       processState.terminate = true;
     }
   }
